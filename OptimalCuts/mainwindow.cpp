@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QWheelEvent>
 #include <QResizeEvent>
+#include <iostream>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow) {
@@ -47,14 +48,8 @@ void MainWindow::dropEvent(QDropEvent *event) {
 void MainWindow::on_btnProcess_clicked() {
     if (currentMat.empty()) return;
 
-    // Масштабируем изображение для скорости (если очень большое)
-    cv::Mat workingMat;
-    if (currentMat.cols > 2000 || currentMat.rows > 2000) {
-        double scale = 0.5; // Масштабируем в 2 раза
-        cv::resize(currentMat, workingMat, cv::Size(), scale, scale);
-    } else {
-        workingMat = currentMat.clone();
-    }
+    // Для отладки работаем с оригинальным размером
+    cv::Mat workingMat = currentMat.clone();
 
     cv::Mat gray;
     if (workingMat.channels() > 1) cv::cvtColor(workingMat, gray, cv::COLOR_BGR2GRAY);
@@ -66,32 +61,64 @@ void MainWindow::on_btnProcess_clicked() {
     QElapsedTimer timer;
     timer.start();
 
-    // Используем бОльшую аппроксимацию для скорости
+    // Обработка с увеличенным epsilon для скорости
     processor.process(bin, 3.0);
 
     qint64 ms = timer.elapsed();
 
+    // Визуализация: рисуем контуры разными цветами в зависимости от иерархии
     cv::Mat out;
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
-    // ТОЛЬКО внешние контуры и разрезы (минимальная визуализация)
+    // Цвета:
+    // Внешние контуры (hierarchy[i][3] == -1): зеленый (0, 255, 0)
+    // Отверстия (внутренние, hierarchy[i][3] >= 0): синий (255, 0, 0)
     for (size_t i = 0; i < processor.contours.size(); ++i) {
-        if (processor.hierarchy[i][3] == -1) { // Только внешние
-            cv::polylines(out, processor.contours[i], true, cv::Scalar(0, 255, 0), 2);
+        cv::Scalar color;
+        if (processor.hierarchy[i][3] == -1) {
+            color = cv::Scalar(0, 255, 0);  // Зеленый для внешних
+        } else {
+            color = cv::Scalar(255, 0, 0);  // Синий для отверстий
         }
-    }
-
-    // Разрезы красным
-    for (auto &cut : processor.cuts) {
-        cv::line(out, cut.p_out, cut.p_in, cv::Scalar(0, 0, 255), 2);
+        if (!processor.contours[i].empty()) {
+            cv::polylines(out, processor.contours[i], true, color, 2);
+        }
     }
 
     displayResult(out);
 
-    ui->textInfo->setText(QString::fromStdString(processor.getInfoString()) +
-                          "\nProcessed in " + QString::number(ms) + " ms");
+    // Вывод информации в textInfo и в консоль
+    QString infoStr = QString::fromStdString(processor.getInfoString()) +
+                      "\nProcessed in " + QString::number(ms) + " ms";
+    ui->textInfo->setText(infoStr);
 
     ui->statusbar->showMessage(QString("Processed in %1 ms").arg(ms));
+
+    // Отладочный вывод в консоль: структура иерархии
+    std::cout << "=== Hierarchy Debug ===" << std::endl;
+    for (size_t i = 0; i < processor.hierarchy.size(); ++i) {
+        const auto& h = processor.hierarchy[i];
+        std::cout << "Contour #" << i << ": ";
+        std::cout << "Next: " << h[0] << ", Prev: " << h[1] << ", First Child: " << h[2] << ", Parent: " << h[3];
+        if (h[3] == -1) {
+            std::cout << " (External contour)";
+        } else {
+            std::cout << " (Hole, parent is #" << h[3] << ")";
+        }
+        std::cout << ", Points: " << processor.contours[i].size() << std::endl;
+
+        // Дополнительно: если это внешний, перечислим его отверстия
+        if (h[3] == -1 && h[2] != -1) {
+            std::cout << "  Holes: ";
+            int child = h[2];
+            while (child != -1) {
+                std::cout << "#" << child << " ";
+                child = processor.hierarchy[child][0];  // Next sibling
+            }
+            std::cout << std::endl;
+        }
+    }
+    std::cout << "=======================" << std::endl;
 }
 
 void MainWindow::on_btnExport_clicked() {
@@ -116,7 +143,6 @@ void MainWindow::on_btnExport_clicked() {
     QJsonObject root;
     root["mergedContours"] = contoursArray;
 
-    // Исправленная часть: используем qint64 для sum
     qint64 totalPoints = 0;
     for (const auto& vec : merged) {
         totalPoints += static_cast<qint64>(vec.size());
