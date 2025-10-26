@@ -69,9 +69,9 @@ void MainWindow::on_btnProcess_clicked() {
         gray = workingMat.clone();
     }
 
-    // Простая бинаризация с порогом 127 (можно настроить)
+    // Простая бинаризация с порогом 127
     cv::Mat bin;
-    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY); // Без INV, предполагая, что объекты белые на черном фоне
+    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY); // Без INV, объекты белые на черном фоне
 
     QElapsedTimer timer;
     timer.start();
@@ -80,11 +80,11 @@ void MainWindow::on_btnProcess_clicked() {
 
     qint64 ms = timer.elapsed();
 
-    // Визуализация: рисуем контуры с учетом полной иерархии
+    // Визуализация: рисуем контуры и разрезы
     cv::Mat out;
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
-    // Массив цветов для 10 уровней
+    // Массив цветов для 10 уровней контуров
     std::vector<cv::Scalar> colors = {
         cv::Scalar(0, 255, 0),    // Уровень 1: Зеленый (внешний)
         cv::Scalar(255, 0, 0),    // Уровень 2: Красный
@@ -98,7 +98,7 @@ void MainWindow::on_btnProcess_clicked() {
         cv::Scalar(128, 128, 128) // Уровень 10: Серый
     };
 
-    // Цвета в зависимости от уровня иерархии
+    // Рисуем контуры
     for (size_t i = 0; i < processor.contours.size(); ++i) {
         int level = 0;
         int current = (int)i;
@@ -110,6 +110,12 @@ void MainWindow::on_btnProcess_clicked() {
         if (!processor.contours[i].empty()) {
             cv::polylines(out, processor.contours[i], true, color, 2);
         }
+    }
+
+    // Рисуем разрезы ярко-оранжевым цветом
+    cv::Scalar cutColor(255, 165, 0); // Яркий оранжевый для разрезов
+    for (const auto& cut : processor.cuts) {
+        cv::line(out, cut.p_out, cut.p_in, cutColor, 2);
     }
 
     displayResult(out);

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iostream>
 #include <queue>
+#include <opencv2/flann.hpp>
 
 using namespace std;
 
@@ -60,25 +61,28 @@ void ImageProcessor::computeOptimalCuts() {
 
     cuts.clear();
 
-    // Проходим по всем контурам и находим внешние контуры (те, у которых нет родителя)
+    // Проходим по всем контурам и находим объектные контуры (signed area > 0)
     for (size_t i = 0; i < contours.size(); ++i) {
-        if (hierarchy[i][3] == -1) { // Внешний контур
-            vector<int> holeIndices;
-            int firstChild = hierarchy[i][2]; // Индекс первого дочернего элемента
+        if (contours[i].empty()) continue;
 
-            if (firstChild != -1) {
-                int currentHole = firstChild;
-                while (currentHole != -1) {
-                    if (!contours[currentHole].empty()) {
-                        holeIndices.push_back(currentHole);
-                    }
-                    currentHole = hierarchy[currentHole][0]; // Следующий сосед
-                }
+        double signedArea = cv::contourArea(contours[i], true);
+        if (signedArea <= 0) continue; // Пропускаем внутренние контуры (отверстия)
 
-                if (!holeIndices.empty()) {
-                    vector<Cut> contourCuts = buildSimpleCuts((int)i, holeIndices);
-                    cuts.insert(cuts.end(), contourCuts.begin(), contourCuts.end());
+        vector<int> holeIndices;
+        int firstChild = hierarchy[i][2]; // Индекс первого дочернего элемента
+
+        if (firstChild != -1) {
+            int currentHole = firstChild;
+            while (currentHole != -1) {
+                if (!contours[currentHole].empty() && cv::contourArea(contours[currentHole], true) < 0) {
+                    holeIndices.push_back(currentHole);
                 }
+                currentHole = hierarchy[currentHole][0]; // Следующий сосед
+            }
+
+            if (!holeIndices.empty()) {
+                vector<Cut> contourCuts = buildSimpleCuts((int)i, holeIndices);
+                cuts.insert(cuts.end(), contourCuts.begin(), contourCuts.end());
             }
         }
     }
@@ -93,42 +97,55 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
     bestCut.contour_in = idx2;
     double minDist = numeric_limits<double>::max();
 
-    int step1 = contour1.size() > 100 ? max(1, (int)contour1.size() / 50) : 1;
-    int step2 = contour2.size() > 100 ? max(1, (int)contour2.size() / 50) : 1;
+    if (contour1.empty() || contour2.empty()) return bestCut;
 
-    int best_i = 0, best_j = 0;
+    // Определяем, какой контур строить дерево, а какой запрашивать (строим на большем)
+    const vector<cv::Point>* buildContour = &contour2;
+    const vector<cv::Point>* queryContour = &contour1;
+    bool outIsQuery = true;
 
-    for (size_t i = 0; i < contour1.size(); i += step1) {
-        cv::Point2f p1 = cv::Point2f(contour1[i]);
-        for (size_t j = 0; j < contour2.size(); j += step2) {
-            cv::Point2f p2 = cv::Point2f(contour2[j]);
-            double dist = cv::norm(p1 - p2);
-            if (dist < minDist) {
-                minDist = dist;
-                bestCut.p_out = p1;
-                bestCut.p_in = p2;
-                best_i = (int)i;
-                best_j = (int)j;
-            }
-        }
+    if (contour1.size() > contour2.size()) {
+        buildContour = &contour1;
+        queryContour = &contour2;
+        outIsQuery = false;
     }
 
-    int refineRadius = 5;
-    int start_i = max(0, best_i - refineRadius);
-    int end_i = min((int)contour1.size(), best_i + refineRadius + 1);
+    // Строим матрицу точек для buildContour
+    cv::Mat pointsBuild(static_cast<int>(buildContour->size()), 2, CV_32F);
+    for (size_t j = 0; j < buildContour->size(); ++j) {
+        pointsBuild.at<float>(static_cast<int>(j), 0) = (*buildContour)[j].x;
+        pointsBuild.at<float>(static_cast<int>(j), 1) = (*buildContour)[j].y;
+    }
 
-    int start_j = max(0, best_j - refineRadius);
-    int end_j = min((int)contour2.size(), best_j + refineRadius + 1);
+    // Создаем KD-дерево
+    cv::flann::Index kdTree(pointsBuild, cv::flann::KDTreeIndexParams(4));
 
-    for (int i = start_i; i < end_i; ++i) {
-        cv::Point2f p1 = cv::Point2f(contour1[i]);
-        for (int j = start_j; j < end_j; ++j) {
-            cv::Point2f p2 = cv::Point2f(contour2[j]);
-            double dist = cv::norm(p1 - p2);
-            if (dist < minDist) {
-                minDist = dist;
-                bestCut.p_out = p1;
-                bestCut.p_in = p2;
+    // Проходим по queryContour
+    for (const auto& pt : *queryContour) {
+        cv::Point2f pQuery = cv::Point2f(pt);
+
+        cv::Mat query(1, 2, CV_32F);
+        query.at<float>(0, 0) = pQuery.x;
+        query.at<float>(0, 1) = pQuery.y;
+
+        std::vector<int> indices(1);
+        std::vector<float> dists(1);
+
+        kdTree.knnSearch(query, indices, dists, 1);
+
+        // Вычисляем точное расстояние (dists - squared distance)
+        int buildIdx = indices[0];
+        cv::Point2f pBuild = cv::Point2f((*buildContour)[buildIdx]);
+        double dist = cv::norm(pQuery - pBuild);
+
+        if (dist < minDist) {
+            minDist = dist;
+            if (outIsQuery) {
+                bestCut.p_out = pQuery;
+                bestCut.p_in = pBuild;
+            } else {
+                bestCut.p_out = pBuild;
+                bestCut.p_in = pQuery;
             }
         }
     }
@@ -163,7 +180,10 @@ vector<vector<cv::Point2f>> ImageProcessor::mergedContours() {
     }
 
     for (size_t i = 0; i < contours.size(); ++i) {
-        if (hierarchy[i][3] != -1) continue; // Пропускаем внутренние
+        if (contours[i].empty()) continue;
+
+        double signedArea = cv::contourArea(contours[i], true);
+        if (signedArea <= 0) continue; // Пропускаем отверстия
 
         vector<cv::Point2f> mergedContour;
         for (const auto& p : contours[i]) {
