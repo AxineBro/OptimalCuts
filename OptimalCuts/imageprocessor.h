@@ -7,10 +7,10 @@
 #include <limits>
 
 struct Cut {
-    cv::Point2f p_out;      // точка на внешнем контуре
-    cv::Point2f p_in;       // точка на внутреннем контуре (отверстии)
-    int contour_out;         // индекс внешнего контура
-    int contour_in;          // индекс внутреннего контура
+    cv::Point2f p_out;      // Точка на внешнем контуре
+    cv::Point2f p_in;       // Точка на внутреннем контуре (отверстии)
+    int contour_out;        // Индекс внешнего контура
+    int contour_in;         // Индекс внутреннего контура
     float length() const { return cv::norm(p_out - p_in); }
 };
 
@@ -18,7 +18,7 @@ class ImageProcessor {
 public:
     ImageProcessor() = default;
 
-    void process(const cv::Mat &binImage, double approxEpsilon = 5.0); // Увеличил epsilon для скорости
+    void process(const cv::Mat &binImage, double thresholdValue = 127.0, double approxEpsilon = 0.0);
 
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
@@ -33,7 +33,7 @@ private:
     void approximateContours(double epsilon);
     void computeOptimalCuts();
 
-    // ОПТИМИЗИРОВАННАЯ версия поиска минимального расстояния
+    // Оптимизированная версия поиска минимального расстояния
     Cut findMinDistanceCutOptimized(const std::vector<cv::Point>& contour1, int idx1,
                                     const std::vector<cv::Point>& contour2, int idx2);
 

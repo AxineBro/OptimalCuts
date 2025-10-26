@@ -7,7 +7,7 @@
 
 using namespace std;
 
-void ImageProcessor::process(const cv::Mat &binImage, double approxEpsilon) {
+void ImageProcessor::process(const cv::Mat &binImage, double thresholdValue, double approxEpsilon) {
     contours.clear();
     hierarchy.clear();
     cuts.clear();
@@ -17,7 +17,11 @@ void ImageProcessor::process(const cv::Mat &binImage, double approxEpsilon) {
         return;
     }
 
-    findContoursAndHierarchy(binImage);
+    // Простая бинаризация с заданным порогом
+    cv::Mat bin;
+    cv::threshold(binImage, bin, thresholdValue, 255, cv::THRESH_BINARY);
+
+    findContoursAndHierarchy(bin);
     if (approxEpsilon > 0.0) approximateContours(approxEpsilon);
     computeOptimalCuts();
 }
@@ -27,19 +31,22 @@ void ImageProcessor::findContoursAndHierarchy(const cv::Mat &bin) {
     vector<vector<cv::Point>> rawContours;
     vector<cv::Vec4i> hier;
 
-    // Используем RETR_CCOMP для двухуровневой иерархии
-    cv::findContours(tmp, rawContours, hier, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE);
+    // Используем RETR_TREE для полной иерархии
+    cv::findContours(tmp, rawContours, hier, cv::RETR_TREE, cv::CHAIN_APPROX_NONE); // CHAIN_APPROX_NONE для точных границ
     contours = move(rawContours);
     hierarchy = move(hier);
-    cerr << "[ImageProcessor] findContours: found " << contours.size() << " contours\n";
+    cerr << "[ImageProcessor] findContours: найдено " << contours.size() << " контуров\n";
 }
 
 void ImageProcessor::approximateContours(double epsilon) {
+    // Отключаем аппроксимацию или делаем минимальной, если epsilon > 0
+    if (epsilon <= 0.0) return;
+
     for (auto &c : contours) {
         if (c.size() < 10) continue; // Не аппроксимируем слишком маленькие контуры
 
-        // Более агрессивная аппроксимация для больших изображений
-        double approxEpsilon = epsilon * 2.0;
+        double perimeter = cv::arcLength(c, true);
+        double approxEpsilon = max(0.1, epsilon * perimeter / 5000.0); // Минимальная аппроксимация
         vector<cv::Point> approx;
         cv::approxPolyDP(c, approx, approxEpsilon, true);
         if (approx.size() >= 3) {
@@ -55,24 +62,19 @@ void ImageProcessor::computeOptimalCuts() {
 
     // Проходим по всем контурам и находим внешние контуры (те, у которых нет родителя)
     for (size_t i = 0; i < contours.size(); ++i) {
-        // Внешний контур имеет hierarchy[i][3] == -1
-        if (hierarchy[i][3] == -1) {
-            // Собираем все непосредственные отверстия этого внешнего контура
+        if (hierarchy[i][3] == -1) { // Внешний контур
             vector<int> holeIndices;
-            int firstChild = hierarchy[i][2]; // First child index
+            int firstChild = hierarchy[i][2]; // Индекс первого дочернего элемента
 
             if (firstChild != -1) {
-                // Есть отверстия - собираем их все
                 int currentHole = firstChild;
                 while (currentHole != -1) {
-                    // Проверяем, что контур не пустой
                     if (!contours[currentHole].empty()) {
                         holeIndices.push_back(currentHole);
                     }
-                    currentHole = hierarchy[currentHole][0]; // Next sibling
+                    currentHole = hierarchy[currentHole][0]; // Следующий сосед
                 }
 
-                // Строим простые разрезы (по 1 на отверстие)
                 if (!holeIndices.empty()) {
                     vector<Cut> contourCuts = buildSimpleCuts((int)i, holeIndices);
                     cuts.insert(cuts.end(), contourCuts.begin(), contourCuts.end());
@@ -81,7 +83,7 @@ void ImageProcessor::computeOptimalCuts() {
         }
     }
 
-    cerr << "[ImageProcessor] computeOptimalCuts: produced " << cuts.size() << " cuts\n";
+    cerr << "[ImageProcessor] computeOptimalCuts: произведено " << cuts.size() << " разрезов\n";
 }
 
 Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour1, int idx1,
@@ -91,13 +93,11 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
     bestCut.contour_in = idx2;
     double minDist = numeric_limits<double>::max();
 
-    // ОПТИМИЗАЦИЯ: используем шаг для больших контуров
     int step1 = contour1.size() > 100 ? max(1, (int)contour1.size() / 50) : 1;
     int step2 = contour2.size() > 100 ? max(1, (int)contour2.size() / 50) : 1;
 
     int best_i = 0, best_j = 0;
 
-    // Первый проход: быстрый с шагом
     for (size_t i = 0; i < contour1.size(); i += step1) {
         cv::Point2f p1 = cv::Point2f(contour1[i]);
         for (size_t j = 0; j < contour2.size(); j += step2) {
@@ -113,7 +113,6 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
         }
     }
 
-    // Второй проход: уточнение в области найденного минимума
     int refineRadius = 5;
     int start_i = max(0, best_i - refineRadius);
     int end_i = min((int)contour1.size(), best_i + refineRadius + 1);
@@ -141,7 +140,6 @@ vector<Cut> ImageProcessor::buildSimpleCuts(int externalContourIdx,
                                             const vector<int>& holeIndices) {
     vector<Cut> simpleCuts;
 
-    // ПРОСТАЯ СХЕМА: каждый внутренний контур соединяем с внешним одним разрезом
     for (int holeIdx : holeIndices) {
         if (contours[externalContourIdx].empty() || contours[holeIdx].empty()) {
             continue;
@@ -159,38 +157,30 @@ vector<vector<cv::Point2f>> ImageProcessor::mergedContours() {
     vector<vector<cv::Point2f>> outputs;
     if (contours.empty()) return outputs;
 
-    // Группируем разрезы по внешним контурам
     map<int, vector<Cut>> cutsByExternal;
     for (const auto& cut : cuts) {
         cutsByExternal[cut.contour_out].push_back(cut);
     }
 
-    // Для каждого внешнего контура строим объединенный контур
     for (size_t i = 0; i < contours.size(); ++i) {
         if (hierarchy[i][3] != -1) continue; // Пропускаем внутренние
 
         vector<cv::Point2f> mergedContour;
-
-        // Начинаем с внешнего контура
         for (const auto& p : contours[i]) {
             mergedContour.emplace_back(cv::Point2f(p));
         }
 
-        // Добавляем внутренние контуры через разрезы
         auto it = cutsByExternal.find((int)i);
         if (it != cutsByExternal.end()) {
             for (const auto& cut : it->second) {
-                // Добавляем разрез от внешнего к внутреннему
                 mergedContour.push_back(cut.p_out);
                 mergedContour.push_back(cut.p_in);
 
-                // Добавляем внутренний контур
                 const auto& hole = contours[cut.contour_in];
                 for (const auto& p : hole) {
                     mergedContour.emplace_back(cv::Point2f(p));
                 }
 
-                // Замыкаем обратно
                 mergedContour.push_back(cut.p_in);
                 mergedContour.push_back(cut.p_out);
             }
@@ -210,7 +200,7 @@ float ImageProcessor::totalCutsLength() const {
 
 string ImageProcessor::getInfoString() const {
     stringstream ss;
-    ss << "Contours found: " << contours.size() << "\n";
+    ss << "Найдено контуров: " << contours.size() << "\n";
 
     int external = 0;
     int holes = 0;
@@ -219,12 +209,10 @@ string ImageProcessor::getInfoString() const {
         else holes++;
     }
 
-    ss << "External contours: " << external << "\n";
-    ss << "Holes: " << holes << "\n";
-    ss << "Cuts made: " << cuts.size() << "\n";
-    ss << "Total cuts length: " << totalCutsLength() << "\n";
-
-    // Убрал детали разрезов для экономии места
+    ss << "Внешние контуры: " << external << "\n";
+    ss << "Отверстия: " << holes << "\n";
+    ss << "Сделано разрезов: " << cuts.size() << "\n";
+    ss << "Общая длина разрезов: " << totalCutsLength() << "\n";
 
     return ss.str();
 }

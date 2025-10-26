@@ -34,7 +34,7 @@ private:
 
     double originalScale = 1.0;
     double resultScale = 1.0;
-    double infoHeight = 200; // Начальная высота info панели
+    double infoHeight = 200; // Начальная высота панели информации
 
     void displayOriginal(const QImage &img);
     void displayResult(const cv::Mat &mat);

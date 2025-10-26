@@ -13,6 +13,7 @@
 #include <QWheelEvent>
 #include <QResizeEvent>
 #include <iostream>
+#include <set>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow) {
@@ -22,10 +23,14 @@ MainWindow::MainWindow(QWidget *parent)
     ui->labelResult->setScaledContents(false);
 }
 
-MainWindow::~MainWindow() { delete ui; }
+MainWindow::~MainWindow() {
+    delete ui;
+}
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
-    if (event->mimeData()->hasUrls()) event->acceptProposedAction();
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
 }
 
 void MainWindow::dropEvent(QDropEvent *event) {
@@ -48,38 +53,60 @@ void MainWindow::dropEvent(QDropEvent *event) {
 void MainWindow::on_btnProcess_clicked() {
     if (currentMat.empty()) return;
 
-    // Для отладки работаем с оригинальным размером
-    cv::Mat workingMat = currentMat.clone();
+    // Масштабируем изображение для скорости на больших размерах
+    cv::Mat workingMat;
+    if (currentMat.cols > 2000 || currentMat.rows > 2000) {
+        double scale = 0.5;
+        cv::resize(currentMat, workingMat, cv::Size(), scale, scale);
+    } else {
+        workingMat = currentMat.clone();
+    }
 
     cv::Mat gray;
-    if (workingMat.channels() > 1) cv::cvtColor(workingMat, gray, cv::COLOR_BGR2GRAY);
-    else gray = workingMat.clone();
+    if (workingMat.channels() > 1) {
+        cv::cvtColor(workingMat, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = workingMat.clone();
+    }
 
+    // Простая бинаризация с порогом 127 (можно настроить)
     cv::Mat bin;
-    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY);
+    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY); // Без INV, предполагая, что объекты белые на черном фоне
 
     QElapsedTimer timer;
     timer.start();
 
-    // Обработка с увеличенным epsilon для скорости
-    processor.process(bin, 3.0);
+    processor.process(bin, 127.0, 0.0); // Отключаем аппроксимацию
 
     qint64 ms = timer.elapsed();
 
-    // Визуализация: рисуем контуры разными цветами в зависимости от иерархии
+    // Визуализация: рисуем контуры с учетом полной иерархии
     cv::Mat out;
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
-    // Цвета:
-    // Внешние контуры (hierarchy[i][3] == -1): зеленый (0, 255, 0)
-    // Отверстия (внутренние, hierarchy[i][3] >= 0): синий (255, 0, 0)
+    // Массив цветов для 10 уровней
+    std::vector<cv::Scalar> colors = {
+        cv::Scalar(0, 255, 0),    // Уровень 1: Зеленый (внешний)
+        cv::Scalar(255, 0, 0),    // Уровень 2: Красный
+        cv::Scalar(0, 0, 255),    // Уровень 3: Синий
+        cv::Scalar(255, 255, 0),  // Уровень 4: Желтый
+        cv::Scalar(0, 255, 255),  // Уровень 5: Голубой
+        cv::Scalar(255, 0, 255),  // Уровень 6: Фиолетовый
+        cv::Scalar(128, 0, 0),    // Уровень 7: Темно-красный
+        cv::Scalar(0, 128, 0),    // Уровень 8: Темно-зеленый
+        cv::Scalar(0, 0, 128),    // Уровень 9: Темно-синий
+        cv::Scalar(128, 128, 128) // Уровень 10: Серый
+    };
+
+    // Цвета в зависимости от уровня иерархии
     for (size_t i = 0; i < processor.contours.size(); ++i) {
-        cv::Scalar color;
-        if (processor.hierarchy[i][3] == -1) {
-            color = cv::Scalar(0, 255, 0);  // Зеленый для внешних
-        } else {
-            color = cv::Scalar(255, 0, 0);  // Синий для отверстий
+        int level = 0;
+        int current = (int)i;
+        while (current != -1) {
+            level++;
+            current = processor.hierarchy[current][3]; // Идем вверх по родителям
         }
+        cv::Scalar color = (level <= 10 && level > 0) ? colors[level - 1] : cv::Scalar(0, 0, 0); // Черный для >10
         if (!processor.contours[i].empty()) {
             cv::polylines(out, processor.contours[i], true, color, 2);
         }
@@ -87,33 +114,32 @@ void MainWindow::on_btnProcess_clicked() {
 
     displayResult(out);
 
-    // Вывод информации в textInfo и в консоль
     QString infoStr = QString::fromStdString(processor.getInfoString()) +
-                      "\nProcessed in " + QString::number(ms) + " ms";
+                      "\nОбработано за " + QString::number(ms) + " мс";
     ui->textInfo->setText(infoStr);
 
-    ui->statusbar->showMessage(QString("Processed in %1 ms").arg(ms));
+    ui->statusbar->showMessage(QString("Обработано за %1 мс").arg(ms));
 
-    // Отладочный вывод в консоль: структура иерархии
-    std::cout << "=== Hierarchy Debug ===" << std::endl;
+    // Расширенный отладочный вывод
+    std::cout << "=== Отладка иерархии (RETR_TREE) ===" << std::endl;
     for (size_t i = 0; i < processor.hierarchy.size(); ++i) {
         const auto& h = processor.hierarchy[i];
-        std::cout << "Contour #" << i << ": ";
-        std::cout << "Next: " << h[0] << ", Prev: " << h[1] << ", First Child: " << h[2] << ", Parent: " << h[3];
-        if (h[3] == -1) {
-            std::cout << " (External contour)";
-        } else {
-            std::cout << " (Hole, parent is #" << h[3] << ")";
+        std::cout << "Контур #" << i << ": ";
+        std::cout << "Следующий: " << h[0] << ", Предыдущий: " << h[1] << ", Первый ребенок: " << h[2] << ", Родитель: " << h[3];
+        int level = 0;
+        int current = (int)i;
+        while (current != -1) {
+            level++;
+            current = processor.hierarchy[current][3];
         }
-        std::cout << ", Points: " << processor.contours[i].size() << std::endl;
+        std::cout << ", Уровень: " << level << ", Точек: " << processor.contours[i].size() << std::endl;
 
-        // Дополнительно: если это внешний, перечислим его отверстия
-        if (h[3] == -1 && h[2] != -1) {
-            std::cout << "  Holes: ";
+        if (h[2] != -1) {
+            std::cout << "  Дети: ";
             int child = h[2];
             while (child != -1) {
                 std::cout << "#" << child << " ";
-                child = processor.hierarchy[child][0];  // Next sibling
+                child = processor.hierarchy[child][0];
             }
             std::cout << std::endl;
         }
@@ -124,7 +150,7 @@ void MainWindow::on_btnProcess_clicked() {
 void MainWindow::on_btnExport_clicked() {
     if (processor.contours.empty()) return;
 
-    QString fileName = QFileDialog::getSaveFileName(this, "Export JSON", "", "JSON (*.json)");
+    QString fileName = QFileDialog::getSaveFileName(this, "Экспорт JSON", "", "JSON (*.json)");
     if (fileName.isEmpty()) return;
 
     auto merged = processor.mergedContours();
