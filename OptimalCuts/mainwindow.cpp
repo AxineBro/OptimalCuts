@@ -84,38 +84,18 @@ void MainWindow::on_btnProcess_clicked() {
     cv::Mat out;
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
-    // Массив цветов для 10 уровней контуров
-    std::vector<cv::Scalar> colors = {
-        cv::Scalar(0, 255, 0),    // Уровень 1: Зеленый (внешний)
-        cv::Scalar(255, 0, 0),    // Уровень 2: Красный
-        cv::Scalar(0, 0, 255),    // Уровень 3: Синий
-        cv::Scalar(255, 255, 0),  // Уровень 4: Желтый
-        cv::Scalar(0, 255, 255),  // Уровень 5: Голубой
-        cv::Scalar(255, 0, 255),  // Уровень 6: Фиолетовый
-        cv::Scalar(128, 0, 0),    // Уровень 7: Темно-красный
-        cv::Scalar(0, 128, 0),    // Уровень 8: Темно-зеленый
-        cv::Scalar(0, 0, 128),    // Уровень 9: Темно-синий
-        cv::Scalar(128, 128, 128) // Уровень 10: Серый
-    };
-
-    // Рисуем контуры
+    // Рисуем все контуры зеленым цветом
+    cv::Scalar greenColor(0, 255, 0); // Зеленый цвет в BGR
     for (size_t i = 0; i < processor.contours.size(); ++i) {
-        int level = 0;
-        int current = (int)i;
-        while (current != -1) {
-            level++;
-            current = processor.hierarchy[current][3]; // Идем вверх по родителям
-        }
-        cv::Scalar color = (level <= 10 && level > 0) ? colors[level - 1] : cv::Scalar(0, 0, 0); // Черный для >10
         if (!processor.contours[i].empty()) {
-            cv::polylines(out, processor.contours[i], true, color, 2);
+            cv::polylines(out, processor.contours[i], true, greenColor, 2);
         }
     }
 
-    // Рисуем разрезы ярко-оранжевым цветом
-    cv::Scalar cutColor(255, 165, 0); // Яркий оранжевый для разрезов
+    // Рисуем разрезы красным цветом
+    cv::Scalar redColor(0, 0, 255); // Красный цвет в BGR
     for (const auto& cut : processor.cuts) {
-        cv::line(out, cut.p_out, cut.p_in, cutColor, 2);
+        cv::line(out, cut.p_out, cut.p_in, redColor, 2);
     }
 
     displayResult(out);
