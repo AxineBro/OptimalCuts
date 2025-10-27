@@ -41,7 +41,6 @@ private:
     cv::Mat currentMat;
     ImageProcessor processor;
 
-    // Переменные для управления видом
     double scale = 1.0;
     QPoint offset;
     QPoint lastDragPos;

@@ -3,7 +3,6 @@
 #include <sstream>
 #include <algorithm>
 #include <iostream>
-#include <queue>
 #include <opencv2/flann.hpp>
 
 using namespace std;
@@ -18,7 +17,6 @@ void ImageProcessor::process(const cv::Mat &binImage, double thresholdValue, dou
         return;
     }
 
-    // Простая бинаризация с заданным порогом
     cv::Mat bin;
     cv::threshold(binImage, bin, thresholdValue, 255, cv::THRESH_BINARY);
 
@@ -32,22 +30,20 @@ void ImageProcessor::findContoursAndHierarchy(const cv::Mat &bin) {
     vector<vector<cv::Point>> rawContours;
     vector<cv::Vec4i> hier;
 
-    // Используем RETR_TREE для полной иерархии
-    cv::findContours(tmp, rawContours, hier, cv::RETR_TREE, cv::CHAIN_APPROX_NONE); // CHAIN_APPROX_NONE для точных границ
+    cv::findContours(tmp, rawContours, hier, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
     contours = move(rawContours);
     hierarchy = move(hier);
     cerr << "[ImageProcessor] findContours: найдено " << contours.size() << " контуров\n";
 }
 
 void ImageProcessor::approximateContours(double epsilon) {
-    // Отключаем аппроксимацию или делаем минимальной, если epsilon > 0
     if (epsilon <= 0.0) return;
 
     for (auto &c : contours) {
-        if (c.size() < 10) continue; // Не аппроксимируем слишком маленькие контуры
+        if (c.size() < 10) continue;
 
         double perimeter = cv::arcLength(c, true);
-        double approxEpsilon = max(0.1, epsilon * perimeter / 5000.0); // Минимальная аппроксимация
+        double approxEpsilon = max(0.1, epsilon * perimeter / 5000.0);
         vector<cv::Point> approx;
         cv::approxPolyDP(c, approx, approxEpsilon, true);
         if (approx.size() >= 3) {
@@ -61,15 +57,14 @@ void ImageProcessor::computeOptimalCuts() {
 
     cuts.clear();
 
-    // Проходим по всем контурам и находим объектные контуры (signed area > 0)
     for (size_t i = 0; i < contours.size(); ++i) {
         if (contours[i].empty()) continue;
 
         double signedArea = cv::contourArea(contours[i], true);
-        if (signedArea <= 0) continue; // Пропускаем внутренние контуры (отверстия)
+        if (signedArea <= 0) continue;
 
         vector<int> holeIndices;
-        int firstChild = hierarchy[i][2]; // Индекс первого дочернего элемента
+        int firstChild = hierarchy[i][2];
 
         if (firstChild != -1) {
             int currentHole = firstChild;
@@ -77,7 +72,7 @@ void ImageProcessor::computeOptimalCuts() {
                 if (!contours[currentHole].empty() && cv::contourArea(contours[currentHole], true) < 0) {
                     holeIndices.push_back(currentHole);
                 }
-                currentHole = hierarchy[currentHole][0]; // Следующий сосед
+                currentHole = hierarchy[currentHole][0];
             }
 
             if (!holeIndices.empty()) {
@@ -99,7 +94,6 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
 
     if (contour1.empty() || contour2.empty()) return bestCut;
 
-    // Определяем, какой контур строить дерево, а какой запрашивать (строим на большем)
     const vector<cv::Point>* buildContour = &contour2;
     const vector<cv::Point>* queryContour = &contour1;
     bool outIsQuery = true;
@@ -110,17 +104,14 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
         outIsQuery = false;
     }
 
-    // Строим матрицу точек для buildContour
     cv::Mat pointsBuild(static_cast<int>(buildContour->size()), 2, CV_32F);
     for (size_t j = 0; j < buildContour->size(); ++j) {
         pointsBuild.at<float>(static_cast<int>(j), 0) = (*buildContour)[j].x;
         pointsBuild.at<float>(static_cast<int>(j), 1) = (*buildContour)[j].y;
     }
 
-    // Создаем KD-дерево
     cv::flann::Index kdTree(pointsBuild, cv::flann::KDTreeIndexParams(4));
 
-    // Проходим по queryContour
     for (const auto& pt : *queryContour) {
         cv::Point2f pQuery = cv::Point2f(pt);
 
@@ -133,7 +124,6 @@ Cut ImageProcessor::findMinDistanceCutOptimized(const vector<cv::Point>& contour
 
         kdTree.knnSearch(query, indices, dists, 1);
 
-        // Вычисляем точное расстояние (dists - squared distance)
         int buildIdx = indices[0];
         cv::Point2f pBuild = cv::Point2f((*buildContour)[buildIdx]);
         double dist = cv::norm(pQuery - pBuild);
@@ -183,7 +173,7 @@ vector<vector<cv::Point2f>> ImageProcessor::mergedContours() {
         if (contours[i].empty()) continue;
 
         double signedArea = cv::contourArea(contours[i], true);
-        if (signedArea <= 0) continue; // Пропускаем отверстия
+        if (signedArea <= 0) continue;
 
         vector<cv::Point2f> mergedContour;
         for (const auto& p : contours[i]) {

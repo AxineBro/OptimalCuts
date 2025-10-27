@@ -23,8 +23,6 @@ MainWindow::MainWindow(QWidget *parent)
     setAcceptDrops(true);
     ui->labelOriginal->setScaledContents(false);
     ui->labelResult->setScaledContents(false);
-
-    // Устанавливаем курсоры для индикации возможности панорамирования
     ui->labelOriginal->setCursor(Qt::OpenHandCursor);
     ui->labelResult->setCursor(Qt::OpenHandCursor);
 }
@@ -66,7 +64,6 @@ void MainWindow::on_btnProcess_clicked() {
         gray = workingMat.clone();
     }
 
-    // Простая бинаризация с порогом 127
     cv::Mat bin;
     cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY);
 
@@ -77,11 +74,9 @@ void MainWindow::on_btnProcess_clicked() {
 
     qint64 ms = timer.elapsed();
 
-    // Визуализация: рисуем контуры и разрезы
     cv::Mat out;
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
-    // Рисуем все контуры зеленым цветом
     cv::Scalar greenColor(0, 255, 0);
     for (size_t i = 0; i < processor.contours.size(); ++i) {
         if (!processor.contours[i].empty()) {
@@ -89,11 +84,9 @@ void MainWindow::on_btnProcess_clicked() {
         }
     }
 
-    // Рисуем разрезы красным цветом
     cv::Scalar redColor(0, 0, 255);
     for (const auto& cut : processor.cuts) {
         cv::line(out, cut.p_out, cut.p_in, redColor, 2);
-        // Добавляем точки для лучшей видимости
         cv::circle(out, cut.p_out, 3, redColor, -1);
         cv::circle(out, cut.p_in, 3, redColor, -1);
     }
@@ -166,46 +159,36 @@ void MainWindow::displayImages() {
 QPixmap MainWindow::getScaledPixmap(const QImage &img, QLabel *label) {
     if (img.isNull() || !label) return QPixmap();
 
-    // Создаем изображение с учетом масштаба и смещения
     int scaledWidth = int(img.width() * scale);
     int scaledHeight = int(img.height() * scale);
 
-    // Масштабируем изображение
     QImage scaledImg = img.scaled(scaledWidth, scaledHeight, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 
-    // Создаем pixmap размера label
     QPixmap pixmap(label->size());
     pixmap.fill(Qt::gray);
 
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
 
-    // Вычисляем позицию для отрисовки с учетом смещения
     int x = offset.x();
     int y = offset.y();
 
-    // Ограничиваем смещение, чтобы не выходить за границы
     QRect labelRect = label->rect();
 
-    // Центрируем если изображение меньше label
     if (scaledWidth < labelRect.width()) {
         x = (labelRect.width() - scaledWidth) / 2;
     } else {
-        // Ограничиваем смещение для больших изображений
         x = qMax(labelRect.width() - scaledWidth, qMin(x, 0));
     }
 
     if (scaledHeight < labelRect.height()) {
         y = (labelRect.height() - scaledHeight) / 2;
     } else {
-        // Ограничиваем смещение для больших изображений
         y = qMax(labelRect.height() - scaledHeight, qMin(y, 0));
     }
 
-    // Рисуем масштабированное изображение
     painter.drawImage(x, y, scaledImg);
 
-    // Добавляем информацию о масштабе
     painter.save();
     painter.setPen(Qt::white);
     painter.setBrush(QColor(0, 0, 0, 128));
@@ -246,7 +229,6 @@ void MainWindow::wheelEvent(QWheelEvent *event) {
     if (!numDegrees.isNull()) {
         double zoomFactor = 1.1;
 
-        // Определяем позицию курсора относительно активного label
         QPoint mousePos;
         if (ui->labelOriginal->underMouse()) {
             mousePos = ui->labelOriginal->mapFromParent(event->position().toPoint());
@@ -256,21 +238,17 @@ void MainWindow::wheelEvent(QWheelEvent *event) {
             return;
         }
 
-        // Вычисляем позицию в координатах изображения до масштабирования
         QPointF imagePosBefore((mousePos.x() - offset.x()) / scale,
                                (mousePos.y() - offset.y()) / scale);
 
-        // Применяем масштабирование
         if (numDegrees.y() > 0) {
             scale *= zoomFactor;
         } else {
             scale /= zoomFactor;
         }
 
-        // Ограничиваем масштаб
         scale = qMax(0.1, qMin(scale, 10.0));
 
-        // Корректируем смещение для zoom к курсору
         offset.setX(mousePos.x() - imagePosBefore.x() * scale);
         offset.setY(mousePos.y() - imagePosBefore.y() * scale);
 
