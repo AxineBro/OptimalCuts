@@ -12,6 +12,8 @@
 #include <QMessageBox>
 #include <QWheelEvent>
 #include <QResizeEvent>
+#include <QMouseEvent>
+#include <QPainter>
 #include <iostream>
 #include <set>
 
@@ -21,6 +23,10 @@ MainWindow::MainWindow(QWidget *parent)
     setAcceptDrops(true);
     ui->labelOriginal->setScaledContents(false);
     ui->labelResult->setScaledContents(false);
+
+    // Устанавливаем курсоры для индикации возможности панорамирования
+    ui->labelOriginal->setCursor(Qt::OpenHandCursor);
+    ui->labelResult->setCursor(Qt::OpenHandCursor);
 }
 
 MainWindow::~MainWindow() {
@@ -43,24 +49,15 @@ void MainWindow::dropEvent(QDropEvent *event) {
     if (currentMat.empty()) return;
 
     originalImage = cvMatToQImage(currentMat);
-    displayOriginal(originalImage);
-    ui->labelResult->clear();
+    resetView();
+    displayImages();
     ui->textInfo->clear();
-    originalScale = 1.0;
-    resultScale = 1.0;
 }
 
 void MainWindow::on_btnProcess_clicked() {
     if (currentMat.empty()) return;
 
-    // Масштабируем изображение для скорости на больших размерах
-    cv::Mat workingMat;
-    if (currentMat.cols > 2000 || currentMat.rows > 2000) {
-        double scale = 0.5;
-        cv::resize(currentMat, workingMat, cv::Size(), scale, scale);
-    } else {
-        workingMat = currentMat.clone();
-    }
+    cv::Mat workingMat = currentMat.clone();
 
     cv::Mat gray;
     if (workingMat.channels() > 1) {
@@ -71,12 +68,12 @@ void MainWindow::on_btnProcess_clicked() {
 
     // Простая бинаризация с порогом 127
     cv::Mat bin;
-    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY); // Без INV, объекты белые на черном фоне
+    cv::threshold(gray, bin, 127, 255, cv::THRESH_BINARY);
 
     QElapsedTimer timer;
     timer.start();
 
-    processor.process(bin, 127.0, 0.0); // Отключаем аппроксимацию
+    processor.process(bin, 127.0, 0.0);
 
     qint64 ms = timer.elapsed();
 
@@ -85,7 +82,7 @@ void MainWindow::on_btnProcess_clicked() {
     cv::cvtColor(bin, out, cv::COLOR_GRAY2BGR);
 
     // Рисуем все контуры зеленым цветом
-    cv::Scalar greenColor(0, 255, 0); // Зеленый цвет в BGR
+    cv::Scalar greenColor(0, 255, 0);
     for (size_t i = 0; i < processor.contours.size(); ++i) {
         if (!processor.contours[i].empty()) {
             cv::polylines(out, processor.contours[i], true, greenColor, 2);
@@ -93,44 +90,22 @@ void MainWindow::on_btnProcess_clicked() {
     }
 
     // Рисуем разрезы красным цветом
-    cv::Scalar redColor(0, 0, 255); // Красный цвет в BGR
+    cv::Scalar redColor(0, 0, 255);
     for (const auto& cut : processor.cuts) {
         cv::line(out, cut.p_out, cut.p_in, redColor, 2);
+        // Добавляем точки для лучшей видимости
+        cv::circle(out, cut.p_out, 3, redColor, -1);
+        cv::circle(out, cut.p_in, 3, redColor, -1);
     }
 
-    displayResult(out);
+    resultImage = cvMatToQImage(out);
+    displayImages();
 
     QString infoStr = QString::fromStdString(processor.getInfoString()) +
                       "\nОбработано за " + QString::number(ms) + " мс";
     ui->textInfo->setText(infoStr);
 
     ui->statusbar->showMessage(QString("Обработано за %1 мс").arg(ms));
-
-    // Расширенный отладочный вывод
-    std::cout << "=== Отладка иерархии (RETR_TREE) ===" << std::endl;
-    for (size_t i = 0; i < processor.hierarchy.size(); ++i) {
-        const auto& h = processor.hierarchy[i];
-        std::cout << "Контур #" << i << ": ";
-        std::cout << "Следующий: " << h[0] << ", Предыдущий: " << h[1] << ", Первый ребенок: " << h[2] << ", Родитель: " << h[3];
-        int level = 0;
-        int current = (int)i;
-        while (current != -1) {
-            level++;
-            current = processor.hierarchy[current][3];
-        }
-        std::cout << ", Уровень: " << level << ", Точек: " << processor.contours[i].size() << std::endl;
-
-        if (h[2] != -1) {
-            std::cout << "  Дети: ";
-            int child = h[2];
-            while (child != -1) {
-                std::cout << "#" << child << " ";
-                child = processor.hierarchy[child][0];
-            }
-            std::cout << std::endl;
-        }
-    }
-    std::cout << "=======================" << std::endl;
 }
 
 void MainWindow::on_btnExport_clicked() {
@@ -165,18 +140,89 @@ void MainWindow::on_btnExport_clicked() {
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(root).toJson());
         file.close();
+        QMessageBox::information(this, "Успех", "Файл успешно экспортирован");
+    } else {
+        QMessageBox::warning(this, "Ошибка", "Не удалось сохранить файл");
     }
 }
 
-void MainWindow::displayOriginal(const QImage &img) {
-    QPixmap pix = QPixmap::fromImage(img).scaled(ui->labelOriginal->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    ui->labelOriginal->setPixmap(pix);
+void MainWindow::on_btnResetView_clicked() {
+    resetView();
+    displayImages();
 }
 
-void MainWindow::displayResult(const cv::Mat &mat) {
-    QImage img = cvMatToQImage(mat);
-    QPixmap pix = QPixmap::fromImage(img).scaled(ui->labelResult->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    ui->labelResult->setPixmap(pix);
+void MainWindow::displayImages() {
+    if (!originalImage.isNull()) {
+        QPixmap pix = getScaledPixmap(originalImage, ui->labelOriginal);
+        ui->labelOriginal->setPixmap(pix);
+    }
+
+    if (!resultImage.isNull()) {
+        QPixmap pix = getScaledPixmap(resultImage, ui->labelResult);
+        ui->labelResult->setPixmap(pix);
+    }
+}
+
+QPixmap MainWindow::getScaledPixmap(const QImage &img, QLabel *label) {
+    if (img.isNull() || !label) return QPixmap();
+
+    // Создаем изображение с учетом масштаба и смещения
+    int scaledWidth = int(img.width() * scale);
+    int scaledHeight = int(img.height() * scale);
+
+    // Масштабируем изображение
+    QImage scaledImg = img.scaled(scaledWidth, scaledHeight, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    // Создаем pixmap размера label
+    QPixmap pixmap(label->size());
+    pixmap.fill(Qt::gray);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+
+    // Вычисляем позицию для отрисовки с учетом смещения
+    int x = offset.x();
+    int y = offset.y();
+
+    // Ограничиваем смещение, чтобы не выходить за границы
+    QRect labelRect = label->rect();
+
+    // Центрируем если изображение меньше label
+    if (scaledWidth < labelRect.width()) {
+        x = (labelRect.width() - scaledWidth) / 2;
+    } else {
+        // Ограничиваем смещение для больших изображений
+        x = qMax(labelRect.width() - scaledWidth, qMin(x, 0));
+    }
+
+    if (scaledHeight < labelRect.height()) {
+        y = (labelRect.height() - scaledHeight) / 2;
+    } else {
+        // Ограничиваем смещение для больших изображений
+        y = qMax(labelRect.height() - scaledHeight, qMin(y, 0));
+    }
+
+    // Рисуем масштабированное изображение
+    painter.drawImage(x, y, scaledImg);
+
+    // Добавляем информацию о масштабе
+    painter.save();
+    painter.setPen(Qt::white);
+    painter.setBrush(QColor(0, 0, 0, 128));
+    QFont font = painter.font();
+    font.setPointSize(8);
+    painter.setFont(font);
+
+    QString info = QString("Масштаб: %1%").arg(int(scale * 100));
+    QRect textRect = painter.fontMetrics().boundingRect(info);
+    textRect.adjust(-4, -2, 4, 2);
+    textRect.moveTo(5, 5);
+
+    painter.drawRect(textRect);
+    painter.drawText(textRect, Qt::AlignCenter, info);
+    painter.restore();
+
+    return pixmap;
 }
 
 QImage MainWindow::cvMatToQImage(const cv::Mat &mat) {
@@ -193,19 +239,87 @@ QImage MainWindow::cvMatToQImage(const cv::Mat &mat) {
 }
 
 void MainWindow::wheelEvent(QWheelEvent *event) {
-    if (event->angleDelta().y() > 0) {
-        originalScale *= 1.1;
-        resultScale *= 1.1;
-    } else {
-        originalScale /= 1.1;
-        resultScale /= 1.1;
+    if (originalImage.isNull()) return;
+
+    QPoint numDegrees = event->angleDelta() / 8;
+
+    if (!numDegrees.isNull()) {
+        double zoomFactor = 1.1;
+
+        // Определяем позицию курсора относительно активного label
+        QPoint mousePos;
+        if (ui->labelOriginal->underMouse()) {
+            mousePos = ui->labelOriginal->mapFromParent(event->position().toPoint());
+        } else if (ui->labelResult->underMouse()) {
+            mousePos = ui->labelResult->mapFromParent(event->position().toPoint());
+        } else {
+            return;
+        }
+
+        // Вычисляем позицию в координатах изображения до масштабирования
+        QPointF imagePosBefore((mousePos.x() - offset.x()) / scale,
+                               (mousePos.y() - offset.y()) / scale);
+
+        // Применяем масштабирование
+        if (numDegrees.y() > 0) {
+            scale *= zoomFactor;
+        } else {
+            scale /= zoomFactor;
+        }
+
+        // Ограничиваем масштаб
+        scale = qMax(0.1, qMin(scale, 10.0));
+
+        // Корректируем смещение для zoom к курсору
+        offset.setX(mousePos.x() - imagePosBefore.x() * scale);
+        offset.setY(mousePos.y() - imagePosBefore.y() * scale);
+
+        displayImages();
     }
-    displayOriginal(originalImage);
-    displayResult(cv::Mat());
+
+    event->accept();
+}
+
+void MainWindow::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        if ((ui->labelOriginal->underMouse() || ui->labelResult->underMouse()) &&
+            !originalImage.isNull()) {
+            isDragging = true;
+            lastDragPos = event->pos();
+            ui->labelOriginal->setCursor(Qt::ClosedHandCursor);
+            ui->labelResult->setCursor(Qt::ClosedHandCursor);
+        }
+    }
+    QMainWindow::mousePressEvent(event);
+}
+
+void MainWindow::mouseMoveEvent(QMouseEvent *event) {
+    if (isDragging && !originalImage.isNull()) {
+        QPoint delta = event->pos() - lastDragPos;
+        offset += delta;
+        lastDragPos = event->pos();
+        displayImages();
+    }
+    QMainWindow::mouseMoveEvent(event);
+}
+
+void MainWindow::mouseReleaseEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && isDragging) {
+        isDragging = false;
+        ui->labelOriginal->setCursor(Qt::OpenHandCursor);
+        ui->labelResult->setCursor(Qt::OpenHandCursor);
+    }
+    QMainWindow::mouseReleaseEvent(event);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
-    displayOriginal(originalImage);
-    displayResult(cv::Mat());
+    displayImages();
+}
+
+void MainWindow::resetView() {
+    scale = 1.0;
+    offset = QPoint(0, 0);
+    ui->labelOriginal->setCursor(Qt::OpenHandCursor);
+    ui->labelResult->setCursor(Qt::OpenHandCursor);
 }

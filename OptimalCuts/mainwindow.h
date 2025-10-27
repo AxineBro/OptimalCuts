@@ -1,6 +1,11 @@
 #pragma once
 #include <QMainWindow>
 #include <QImage>
+#include <QPoint>
+#include <QWheelEvent>
+#include <QMouseEvent>
+#include <QLabel>
+#include <QPainter>
 #include <opencv2/opencv.hpp>
 #include "imageprocessor.h"
 
@@ -20,10 +25,14 @@ protected:
     void dropEvent(QDropEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private slots:
     void on_btnProcess_clicked();
     void on_btnExport_clicked();
+    void on_btnResetView_clicked();
 
 private:
     Ui::MainWindow *ui;
@@ -32,12 +41,14 @@ private:
     cv::Mat currentMat;
     ImageProcessor processor;
 
-    double originalScale = 1.0;
-    double resultScale = 1.0;
-    double infoHeight = 200; // Начальная высота панели информации
+    // Переменные для управления видом
+    double scale = 1.0;
+    QPoint offset;
+    QPoint lastDragPos;
+    bool isDragging = false;
 
-    void displayOriginal(const QImage &img);
-    void displayResult(const cv::Mat &mat);
+    void displayImages();
     static QImage cvMatToQImage(const cv::Mat &mat);
-    void updateScales();
+    void resetView();
+    QPixmap getScaledPixmap(const QImage &img, QLabel *label);
 };
